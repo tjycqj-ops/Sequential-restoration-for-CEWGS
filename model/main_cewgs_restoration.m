@@ -1,6 +1,4 @@
-% V12 + ICCM有限差分暂态水网 + 双向hP/hM-SOC普通水管独立版。
-% 普通水管旧mita/Taylor SCA已完全移除；水泵功率FPP-SCA与气网SOC惩罚保留。
-% function [cons,W_cons,G_cons,Cost,yita,p_W,y_it]=robust_IES(yita)
+% CEWGS恢复模型：ICCM暂态水网、双向水管SOC、水泵FPP-SCA与气网SOC。
 %% 参数录入
 tic;
 clear;clc
@@ -39,9 +37,16 @@ if isempty(case_file)
         'cewgs_33_20_15_test_system.mat');
 end
 assert(exist(case_file,'file')==2,'CEWGS_CASE_FILE does not identify an existing MAT file.');
-supdata=importdata(case_file);%系统数据录入；允许隔离测试覆盖案例文件而不覆盖正式基线
+supdata=importdata(case_file);%系统数据录入
+wind_file=strtrim(getenv('CEWGS_WIND_FILE'));
+if isempty(wind_file)
+    wind_file=fullfile(fileparts(mfilename('fullpath')),'..','data','wind_uncertainty.txt');
+end
+assert(exist(wind_file,'file')==2,'Missing wind input: %s',wind_file);
+set0=importdata(wind_file);
+assert(isstruct(set0)&&size(set0.data,1)==5&&all(isfinite(set0.data(:))), ...
+    'Wind input must contain three forecasts and two finite uncertainty bounds.');
 [main_line]=supdata.main_line;%电系统支路数据
-% main_line(32:36,:)=[];%去掉联络线
 [load]=supdata.load;%电系统节点数据
 load(:,2)=load(:,2)*0.5;
 load(:,3)=load(:,3)*0.5;
@@ -119,7 +124,6 @@ n3=size(WT,1);%风电机组数量
 p1=size(WDS_pump,1);%水泵数
 cp1=size(GDS_compessor,1);%天然气压缩机数
 Kt=6;%开关控制上限
-% T=ceil((size(load,1)-n_root)/Kt);%时间断面数（以GT作为黑启动源）
 % 真实时间总时段与窗口
 TT = 16;   % 4 h / 15 min = 16 个实际执行时段
 test_steps=str2double(getenv('CEWGS_TEST_STEPS'));
@@ -127,7 +131,7 @@ if isfinite(test_steps)
     assert(test_steps>=1&&test_steps<=32&&test_steps==floor(test_steps));
     TT=test_steps;
 end
-Th = 2;    % 预测时域2；配合控制时域1的0-1变量移动阻塞保证可计算性
+Th = 3;    % 正式四方案统一预测时域
 requested_horizon=str2double(getenv('CEWGS_ROLLING_HORIZON'));
 if isfinite(requested_horizon)&&requested_horizon>=1&&requested_horizon<=TT&&requested_horizon==floor(requested_horizon)
     Th=requested_horizon;
@@ -284,13 +288,11 @@ G_smax=GDS_station(:,3);%气源流量上限
 K_mn=repmat(GDS_pipe(:,7),1,TT);
 fai=0.279;%天然气电转化系数279kW/kcf
 effi=GT(:,7);%燃气轮机效率
-% Sl_tmin=repmat(Sl_t0,1,TT);%气罐最低储量
 Sl_tmin=zeros(sto,TT);%气罐最低储量
 Sl_tmax=repmat(GDS_storage(:,3),1,TT);%气罐最大储量
 g_soutmax=repmat(GDS_storage(:,6),1,TT);%流出流量上限
 g_sinmax=repmat(GDS_storage(:,5),1,TT);%流入流量上限
 %% 储气量
-% Sl_t0=zeros(sto,1);%初始储气罐存量
 %%......................水系统初值参数....................................%%
 pipe=WDS_pipe;
 W_imax=repmat(WDS_load(:,2),1,TT);%用户水负荷需求
@@ -394,8 +396,6 @@ for i=1:sto
 end
 M1=Bg1*Ag1'*kesai_imax*10;%天然气系统压强大M
 %% 初始气管存
-% X_mn0=Bg2*GDS_pipe(:,9);
-% X_mn0=zeros(l1-cp1,1);
 kesai_ireq=3*kesai_imin;
 Dg=zeros(s1,ng1);% 气源节点关联矩阵
 for i=1:s1
@@ -507,24 +507,7 @@ topology_formulation=lower(strtrim(getenv('CEWGS_TOPOLOGY_FORMULATION')));
 if isempty(topology_formulation),topology_formulation='legacy';end
 assert(any(strcmp(topology_formulation,{'legacy','strengthened'})), ...
     'CEWGS_TOPOLOGY_FORMULATION must be legacy or strengthened.');
-topology_solution_mode=lower(strtrim(getenv('CEWGS_TOPOLOGY_SOLUTION_MODE')));
-if isempty(topology_solution_mode),topology_solution_mode='direct';end
-assert(any(strcmp(topology_solution_mode,{'direct','relax_project_polish','mcb_prototype'})), ...
-    'CEWGS_TOPOLOGY_SOLUTION_MODE must be direct, relax_project_polish, or mcb_prototype.');
-rpp_relax_time_limit=str2double(getenv('CEWGS_RPP_RELAX_TIME_LIMIT'));
-if ~(isfinite(rpp_relax_time_limit)&&rpp_relax_time_limit>0),rpp_relax_time_limit=60;end
-rpp_projection_time_limit=str2double(getenv('CEWGS_RPP_PROJECTION_TIME_LIMIT'));
-if ~(isfinite(rpp_projection_time_limit)&&rpp_projection_time_limit>0),rpp_projection_time_limit=10;end
-rpp_polish_time_limit=str2double(getenv('CEWGS_RPP_POLISH_TIME_LIMIT'));
-if ~(isfinite(rpp_polish_time_limit)&&rpp_polish_time_limit>0),rpp_polish_time_limit=60;end
-mcb_max_iterations=str2double(getenv('CEWGS_MCB_MAX_ITERATIONS'));
-if ~(isfinite(mcb_max_iterations)&&mcb_max_iterations>=1&&mcb_max_iterations==floor(mcb_max_iterations)),mcb_max_iterations=3;end
-mcb_relative_gap=str2double(getenv('CEWGS_MCB_RELATIVE_GAP'));
-if ~(isfinite(mcb_relative_gap)&&mcb_relative_gap>=0&&mcb_relative_gap<1),mcb_relative_gap=0.05;end
-mcb_relax_time_limit=str2double(getenv('CEWGS_MCB_RELAX_TIME_LIMIT'));
-if ~(isfinite(mcb_relax_time_limit)&&mcb_relax_time_limit>0),mcb_relax_time_limit=30;end
-mcb_integer_time_limit=str2double(getenv('CEWGS_MCB_INTEGER_TIME_LIMIT'));
-if ~(isfinite(mcb_integer_time_limit)&&mcb_integer_time_limit>0),mcb_integer_time_limit=30;end
+topology_solution_mode='direct';%正式算例统一直接求解MISOCP
 if strcmp(topology_formulation,'strengthened')
     Mf=length(load)-n_root;%多根森林中任一支路最多承载全部非根节点的单位商品流
     topology_cycle_matrix=restoration_cycle_matrix(main_line(:,2:3));
@@ -641,7 +624,7 @@ gas_low_pressure_seed=min(Bg2*Ag1'*kesai_i0,Bg2*Ag2'*kesai_i0);%气管反向SCA�
     sca_iter_r=zeros(1,TT);sca_slack_r=zeros(1,TT);pump_slack_r=zeros(1,TT);solve_time_r=zeros(1,TT);sca_plan_locked_r=false(1,TT);
     sca_ref_flow_rms_r=zeros(1,TT);sca_ref_pump_rms_r=zeros(1,TT);
     solver_problem_r=zeros(1,TT);friction_res_r=zeros(1,TT);linepack_res_r=zeros(1,TT);gas_dynamic_res_r=zeros(1,TT);pump_curve_res_r=zeros(1,TT);pump_power_res_r=zeros(1,TT);switch_action_count_r=zeros(1,TT);switch_action_weighted_r=zeros(1,TT);
-    sca_solve_time_trace_r=cell(1,TT);solver_output_trace_r=cell(1,TT);rpp_trace_r=cell(1,TT);mcb_trace_r=cell(1,TT);
+    sca_solve_time_trace_r=cell(1,TT);solver_output_trace_r=cell(1,TT);
     sca_objective_trace_r=cell(1,TT);sca_ref_flow_rms_trace_r=cell(1,TT);sca_ref_pump_rms_trace_r=cell(1,TT);
     sca_water_soc_gap_trace_r=cell(1,TT);sca_gas_soc_gap_trace_r=cell(1,TT);sca_pipe_residual_trace_r=cell(1,TT);sca_pump_slack_trace_r=cell(1,TT);
     sca_water_pipe_slack_trace_r=cell(1,TT);sca_gas_pipe_slack_trace_r=cell(1,TT);
@@ -662,7 +645,6 @@ for t = 1:executed_steps
     end
     r_i0=A1*r_i;%用电负荷恢复比例
     %% 水系统关键决策变量
-    % w_i0=importdata('策略.XLSX').w_i;
     %% 配电系统中间变量
     P_ij=sdpvar(size(main_line,1),T,'full');%线路传输有功
     Q_ij=sdpvar(size(main_line,1),T,'full');%线路传输无功
@@ -712,7 +694,6 @@ for t = 1:executed_steps
     H_tank=sdpvar(size(WDS_tank,1),T,'full');%水箱压头辅助变量
     L_ij=sdpvar(size(WDS_pipe,1)-size(WDS_pump,1),T,'full');%管道水头损失
     W_ijave=sdpvar(size(WDS_pipe,1),T+1,'full');%端点净流量的空间平均，用于ICCM后向差分
-
 
     %% 优化模型
     if strcmp(pump_speed_model,'sca')
@@ -829,10 +810,6 @@ for t = 1:executed_steps
         cons=[cons,P_ij.^2+Q_ij.^2<=S_ijmax(:,1:T).^2.*a_ij(:,2:(T+1))];%原始较弱连续松弛
     end
     % %线路容量约束(线性化处理后)
-    % cons=[cons,P_ij<=S_ijmax.*a_ij(:,2:(T+1))/sqrt(2)];%非线性约束
-    % cons=[cons,P_ij>=-S_ijmax.*a_ij(:,2:(T+1))/sqrt(2)];%非线性约束
-    % cons=[cons,Q_ij<=S_ijmax.*a_ij(:,2:(T+1))/sqrt(2)];%非线性约束Q_ij
-    % cons=[cons,Q_ij>=-S_ijmax.*a_ij(:,2:(T+1))/sqrt(2)];%非线性约束Q_ij
     %网络黑启动约束
     cons=[cons,sum(a_ij(:,2:T+1)-a_ij(:,1:T))<=ones(1,T)*Kt];%单位时间恢复线路数约束
     cons=[cons,-y_it(line(:,2),2:(T+1))<=-a_ij(line(:,1),2:(T+1))];%线路恢复两端节点一定恢复
@@ -870,7 +847,6 @@ for t = 1:executed_steps
     end
     cons=[cons,fai*g_GT.*repmat(effi,1,T)==p_G];%燃气轮机耗气量关系GT(:,4)./effi/fai
     cons=[cons,(0<=g_i0(:,2:end))&(g_i0(:,2:end)<=1)];%仅约束当前决策列，避免上一时段容差值造成假不可行
-    % cons=[cons,g_i0(:,2:end)-g_i0(:,1:end-1)>=0];%恢复后不可短时中断
     cons=[cons,vec(g_GS)>=0];
     cons=[cons,vec(g_GS)<=vec(repmat(G_smax,1,T))];%气源仅受固定容量上限约束，不设源端爬坡
     if enforce_gas_node_min_pressure
@@ -886,12 +862,11 @@ for t = 1:executed_steps
     end
     if ~isempty(gas_flow_source_station)
         if strcmp(gas_flow_source_mode,'fixed')
-            cons=[cons,g_GS(gas_flow_source_station,:)==gas_flow_source_rate_kcfh];%正式算例：节点8恒流气源
+            cons=[cons,g_GS(gas_flow_source_station,:)==gas_flow_source_rate_kcfh];%恒流边界
         else
-            cons=[cons,g_GS(gas_flow_source_station,:)<=gas_flow_source_rate_kcfh];%仅供稳态容量诊断：10 kcf/h为可调上限
+            cons=[cons,g_GS(gas_flow_source_station,:)<=gas_flow_source_rate_kcfh];%正式算例：10 kcf/h为可调上限
         end
     end
-    % cons=[cons,kesai_imin(GT(:,3),:).*y_it(GT(:,2),2:(T+1))<=kesai_i(GT(:,3),:)];%GT气压下限
     cons=[cons,kesai_i<=kesai_imax(:,1:T)];%节点气压上限
     cons=[cons,Bg2*G_ijave==0.5*Bg2*(G_ij-G_ji)];%管道平均流量
     % 压缩机流入和流出节点气压关系
@@ -912,27 +887,20 @@ for t = 1:executed_steps
     end
     % %,,,,,,,,,,,,,,,,,weymouth 方程(双向凸松弛)....................%
     if flow_direction_move_blocking&&T>1
-        I_ij=repmat(binvar(l1-cp1,1,'full'),1,T);%30 min预测窗内气流方向保持不变
+        I_ij=repmat(binvar(l1-cp1,1,'full'),1,T);%预测窗内气流方向保持不变
     else
         I_ij=binvar(l1-cp1,T,'full');%管道方向判别0-1变量
     end
     kesai_ijH=sdpvar(l1-cp1,T,'full');%i-j中高压节点气压
     kesai_ijL=sdpvar(l1-cp1,T,'full');%i-j中低压节点气压
-    % %凸约束（线性化后）
-    % theta = linspace(0,2*pi,4);
-    % for k = 1:length(theta)
-    %     u = [cos(theta(k)); sin(theta(k))];
-    %     cons=[cons,u(1)*Bg2*(G_ijave./Cij) + u(2)*kesai_ijL <= kesai_ijH];
-    % end
     cons=[cons,sqrt(Bg2*(G_ijave./Cij(:,1:T)).^2+kesai_ijL.^2)<=kesai_ijH];%凸约束（线性化前）
     cons=[cons,-I_ij.*(Bg2*G_ijmax(:,1:T))<=Bg2*G_ijave];
     cons=[cons,(1-I_ij).*(Bg2*G_ijmax(:,1:T))>=Bg2*G_ijave];
-    %I_ij=0时首节点气压大于末节点
+    % I_ij为0时首节点气压较高，为1时末节点气压较高。
     cons=[cons,-I_ij.*(Bg2*Ag1'*kesai_imax(:,1:T))<=kesai_ijH-Bg2*(Ag1'*kesai_i)];
     cons=[cons,I_ij.*(Bg2*Ag1'*kesai_imax(:,1:T))>=kesai_ijH-Bg2*(Ag1'*kesai_i)];
     cons=[cons,-I_ij.*(Bg2*Ag2'*kesai_imax(:,1:T))<=kesai_ijL-Bg2*(Ag2'*kesai_i)];
     cons=[cons,I_ij.*(Bg2*Ag2'*kesai_imax(:,1:T))>=kesai_ijL-Bg2*(Ag2'*kesai_i)];
-    %I_ij=1时首节点气压小于末节点
     cons=[cons,(I_ij-1).*(Bg2*Ag2'*kesai_imax(:,1:T))<=kesai_ijH-Bg2*(Ag2'*kesai_i)];
     cons=[cons,(1-I_ij).*(Bg2*Ag2'*kesai_imax(:,1:T))>=kesai_ijH-Bg2*(Ag2'*kesai_i)];
     cons=[cons,(I_ij-1).*(Bg2*Ag1'*kesai_imax(:,1:T))<=kesai_ijL-Bg2*(Ag1'*kesai_i)];
@@ -943,8 +911,6 @@ for t = 1:executed_steps
     %% 储气罐相关约束
     if strcmp(gas_tank_model,'dynamic_storage')
         cons=[cons,Sl_t-[Sl_t0,Sl_t(:,1:end-1)]==(g_sin-g_sout).*detT];%储气罐存量约束
-        % cons=[cons,Sl_t<=Sl_tmax];%存量上限约束
-        % cons=[cons,Sl_t>=Sl_tmin];%最低存量约束
         cons=[cons,St1*kesai_i==1.64*Sl_t./3.2*100];
         cons=[cons,vec(g_sout)>=0,vec(g_sout)<=vec(g_soutmax(:,1:T))];%流率上限不重复乘时间步长
         cons=[cons,vec(g_sin)>=0,vec(g_sin)<=vec(g_sinmax(:,1:T))];%流率上限不重复乘时间步长
@@ -960,7 +926,6 @@ for t = 1:executed_steps
     cons=[cons,0<=W_WR(1,:),W_WR(1,:)<=water_source_max];%水源仅受固定容量上限约束，不设源端爬坡
     %配水系统负荷约束
     cons=[cons,(0<=w_i0(:,2:end))&(w_i0(:,2:end)<=1)];%仅约束当前决策列，避免上一时段容差值造成假不可行
-    % cons=[cons,w_i0(:,2:end)-w_i0(:,1:end-1)>=0];%恢复后不可短时中断
     % 水管模型与显式水箱分开控制。稳态水网取消管内储水和惯性项，
     % water_tank_model 独立决定是否保留调节水箱。
     if strcmp(water_network_model,'transient')
@@ -1048,7 +1013,6 @@ for t = 1:executed_steps
     cons=[cons,-W_ijmax(:,1:T)<=W_ji];
     cons=[cons,W_ji<=W_ijmax(:,1:T)];
     %压力上下限约束
-    % cons=[cons,H_imin<=H_i];
     cons=[cons,0<=H_i];
     cons=[cons,H_i<=H_imax(:,1:T)];
     %........................负荷压力驱动约束...................%
@@ -1065,7 +1029,7 @@ for t = 1:executed_steps
             (H_imax(2:end,1:T)-H_ireq(2:end,1:T)).*fixed_pressure_w_available];
     elseif strcmp(service_model,'pressure_driven')&&strcmp(pressure_driven_formulation,'compact_exact')
         % 三段压力驱动曲线的精确单二进制表述。active=0对应零供给低压区；
-        % active=1同时覆盖线性压力驱动区和额定供给平台，平台由w<=1直接截断。
+        % 激活状态覆盖线性压力驱动区和额定平台，平台由w<=1截断。
         water_pressure_span=H_ireq(2:end,1:T)-H_imin(2:end,1:T);
         cons=[cons,w_i0(:,2:end)<=pressure_driven_w_active];
         cons=[cons,H_i(2:end,:)>=H_imin(2:end,1:T).*pressure_driven_w_active];
@@ -1096,6 +1060,7 @@ for t = 1:executed_steps
     if strcmp(service_model,'fixed_pressure')&&strcmp(fixed_pressure_formulation,'compact_exact')
         % 与水网相同：恢复比例连续，二进制变量只表示额定压力可用状态。
         cons=[cons,g_i0(:,2:end)<=fixed_pressure_g_available];
+        cons=[cons,g_i0(:,2:end)>=g_imin.*fixed_pressure_g_available];
         cons=[cons,A2*kesai_i>=A2*kesai_ireq(:,1:T).*fixed_pressure_g_available];
         if gas_customer_inactive_pressure_upper
             cons=[cons,A2*kesai_i<=A2*kesai_ireq(:,1:T)+ ...
@@ -1124,7 +1089,7 @@ for t = 1:executed_steps
         cons=[cons,vg2.*(A2*kesai_isaf(:,1:T))+vg3.*(A2*kesai_ireq(:,1:T))<=A2*kesai_i];%压力区分类
         cons=[cons,A2*kesai_i<=vg1.*(A2*kesai_isaf(:,1:T))+vg2.*(A2*kesai_ireq(:,1:T))+vg3.*(A2*kesai_imax(:,1:T))];%压力区分类
         if strcmp(service_model,'fixed_pressure')
-            cons=[cons,0<=g_i0(:,2:end),g_i0(:,2:end)<=vg3];%原始扩展表述
+            cons=[cons,g_i0(:,2:end)>=g_imin.*vg3,g_i0(:,2:end)<=vg3];%固定压力同样满足最低安全供气比例
         else
             cons=[cons,(g_i0(:,2:end)>=0)&(g_i0(:,2:end)<=1-vg1)];%零负荷区
             cons=[cons,(g_i0(:,2:end)>=g_imin.*(1-vg1))&(g_i0(:,2:end)<=(A2*kesai_i-A2*kesai_imin(:,1:T))./(A2*kesai_ireq(:,1:T)-A2*kesai_imin(:,1:T))+1-vg2)];%安全压力驱动区
@@ -1183,9 +1148,6 @@ for t = 1:executed_steps
     %........................凸松弛.............................%
     %水泵约束
     cons=[cons,Bw*W_ji==-Bw*W_ij];%水泵不储水，两个端点流量守恒
-    % cons=[cons,-M*(1-Xm)+(alpha.*(Bw*W_ij).*omima+beta.*omima.^2)<=Gp_ij];%凸约束非凸约束
-    % cons=[cons,M*(1-Xm)-alpha.^2./(4*beta).*(Bw*W_ij).*(Bw*W_ij_temp)+beta.*(omima+0.5*alpha./beta.*(Bw*W_ij)).*...
-    %     (omima_temp+0.5*alpha./beta.*(Bw*W_ij_temp))+sasa>=Gp_ij];%非凸约束
     cons=[cons,vec(Bw*W_ij)>=0];
     cons=[cons,vec(Bw*W_ij)<=vec((Bw*W_ijmax(:,1:T)).*Xm)];
     if strcmp(pump_speed_model,'projection')
@@ -1199,9 +1161,8 @@ for t = 1:executed_steps
     else
         cons=[cons,vec(omima)>=0,vec(omima)<=vec(Xm)];%停泵时转速必须为0，避免无物理意义的自由转速振荡
     end
-    % cons=[cons,P_pump==g*(1./eff).*Gp_ij.*W_ij_temp];%水泵功率
     %% 风电机会约束的确定性等价形式
-    set0=importdata('盒式不确定集.txt');
+    % Wind input is loaded once before the rolling loop.
     % 延长恢复诊断超过原预测长度时保持末端预测值，不额外增加风电。
     wind_index=min(t:t+T-1,size(set0.data,2));
     base_set=set0.data(1:3,wind_index);%日前风电预测结果
@@ -1212,6 +1173,9 @@ for t = 1:executed_steps
     [wind_lower,wind_mean,wind_sigma,wind_z]=wind_chance_limit_from_box(...
         base_set,min_set,max_set,epsilon_wind,box_coverage);
     ops = sdpsettings('verbose',0,'solver','gurobi');
+    % 正式求解不执行参数调优，去掉旧YALMIP中版本相关的Tune默认值。
+    tuning_fields=fieldnames(ops.gurobi);
+    ops.gurobi=rmfield(ops.gurobi,tuning_fields(startsWith(tuning_fields,'Tune')));
     ops.gurobi.Seed=0;
     requested_threads=str2double(getenv('CEWGS_THREADS'));
     if ~isfinite(requested_threads), requested_threads=1; end
@@ -1220,10 +1184,9 @@ for t = 1:executed_steps
     ops.savesolveroutput=capture_solver_trace;
     ops.savesolverinput=capture_solver_trace;
     requested_mip_gap=str2double(getenv('CEWGS_MIP_GAP'));
-    if isfinite(requested_mip_gap)
-        assert(requested_mip_gap>=0&&requested_mip_gap<1,'CEWGS_MIP_GAP must be in [0,1).');
-        ops.gurobi.MIPGap=requested_mip_gap;
-    end
+    if ~isfinite(requested_mip_gap),requested_mip_gap=1e-4;end
+    assert(requested_mip_gap>=0&&requested_mip_gap<1,'CEWGS_MIP_GAP must be in [0,1).');
+    ops.gurobi.MIPGap=requested_mip_gap;
     requested_time_limit=str2double(getenv('CEWGS_SOLVE_TIME_LIMIT'));
     if isfinite(requested_time_limit)
         assert(requested_time_limit>0,'CEWGS_SOLVE_TIME_LIMIT must be positive.');
@@ -1234,8 +1197,6 @@ for t = 1:executed_steps
         assert(rolling_window_time_limit>0, ...
             'CEWGS_ROLLING_WINDOW_TIME_LIMIT must be positive.');
     end
-    % ops.gurobi.MIPGap = 0.0005;
-    % ops.gurobi.TimeLimit = 40;
     cons=[cons,vec(p_W)>=0,vec(p_W)<=vec(wind_lower.*(F'*y_it(:,2:T+1)))];
     %%................内层问题初始化.................%%
     %% 附加变量
@@ -1308,20 +1269,9 @@ for t = 1:executed_steps
     water_qM_ref=repmat(max(-water_q_initial,0),1,T);
     gas_q_ref=repmat(gas_flow_seed,1,T);
     gas_pL_ref=repmat(gas_low_pressure_seed,1,T);
-    % Qs=[0,alpha(1)/2;
-    %     alpha(1)/2,beta(1)];
-    % [Vs,Ds]=eig(Qs);%计算A的特征值对角阵D和特征向量V，使AV=VD成立
-    % lambda_P=Ds;
-    % lambda_N=-Ds;
-    % lambda_P(find(Ds<0))=0;
-    % lambda_N(find(Ds>0))=0;
-    % Ps=Vs*lambda_P*Vs';
-    % Ns=Vs*lambda_N*Vs';
     sca_iter=0;
     plan_lock_cons=[];
     plan_locked=false;
-    rpp_topology_cons=[];
-    rpp_topology_plan=[];
     while(1)
         sca_iter=sca_iter+1;
         cons_in=[];
@@ -1332,9 +1282,6 @@ for t = 1:executed_steps
             cons_in=[cons_in,vec(-M*(1-Xm)-alpha(:,1:T).^2./(4*beta(:,1:T)).*(Bw*W_ij).*(Bw*W_ij_temp)+beta(:,1:T).*(omima+0.5*alpha(:,1:T)./beta(:,1:T).*(Bw*W_ij)).^2-sasa2)<=vec(Gp_ij)];
         end
         %...............................................%
-        %     cons_in=[cons_in,M*(1-Xm)-alpha.^2./(4*beta).*(Bw*W_ij).*(Bw*W_ij_temp)+beta.*(omima+0.5*alpha./beta.*(Bw*W_ij)).*...
-        %         (omima_temp+0.5*alpha./beta.*(Bw*W_ij_temp))+sasa1>=Gp_ij];%非凸约束
-        %     cons_in=[cons_in,-M*(1-Xm)+(alpha.*(Bw*W_ij).*omima_temp+beta.*omima.^2)-sasa2<=Gp_ij];%凸约束非凸约束
         if strcmp(pump_power_sca_mode,'full')
             pump_q_scale=max(Bw*W_ijmax(:,1:T),1e-3);
             pump_H_scale=max(H_imax(:,1:T),[],'all')*ones(size(WDS_pump,1),T);
@@ -1414,58 +1361,7 @@ for t = 1:executed_steps
             ops.gurobi.OutputFlag=1;
             ops.gurobi.LogFile=fullfile(output_dir,sprintf('roll_%02d_sca_%02d_gurobi.log',t,sca_iter));
         end
-        if strcmp(topology_solution_mode,'relax_project_polish')&&isempty(rpp_topology_plan)
-            rpp_context=struct('line',main_line,'roots',GT(:,2), ...
-                'y_previous',y_it0,'a_previous',a_ij0,'switch_budget',Kt, ...
-                'commodity_bound',Mf);
-            rpp_context.node_benefit=zeros(size(load,1),1);
-            rpp_context.node_benefit(find(sum(A1,2)>0))=omiga(:);
-            rpp_context.protected=struct('variable',{Xm,Xc}, ...
-                'buses',{WDS_pump(:,6),GDS_compessor(:,9)});
-            rpp_options=struct('relax_time_limit',rpp_relax_time_limit, ...
-                'projection_time_limit',rpp_projection_time_limit, ...
-                'polish_time_limit',rpp_polish_time_limit,'mip_gap',requested_mip_gap, ...
-                'threads',requested_threads,'seed',0,'output_flag',0);
-            [sol,rpp_trace,rpp_topology_plan]=solve_topology_relax_project_polish( ...
-                [cons,plan_lock_cons,cons_in],Fs,ops,y_it(:,2:T+1), ...
-                a_ij(:,2:T+1),rpp_context,rpp_options);
-            if sol.problem==0
-                rpp_topology_cons=[y_it(:,2:T+1)==rpp_topology_plan.y, ...
-                    a_ij(:,2:T+1)==rpp_topology_plan.a];
-                rpp_trace_r{t}=rpp_trace;
-            end
-        elseif strcmp(topology_solution_mode,'mcb_prototype')&&isempty(rpp_topology_plan)
-            mcb_context=struct('line',main_line,'roots',GT(:,2), ...
-                'y_previous',y_it0,'a_previous',a_ij0,'switch_budget',Kt, ...
-                'commodity_bound',Mf);
-            graph_context=struct('line',main_line,'roots',GT(:,2), ...
-                'y_previous',y_it0,'a_previous',a_ij0, ...
-                'customer_nodes',find(sum(A1,2)>0),'priority',omiga(:), ...
-                'pump_buses',WDS_pump(:,6), ...
-                'water_pump_paths',restoration_water_pump_paths( ...
-                    WDS_pipe,WDS_pump,(2:size(WDS_node,1))'), ...
-                'compressor_buses',GDS_compessor(:,9), ...
-                'gas_demand',GDS_node(GDS_node(:,6)~=0,6), ...
-                'gas_base_capacity',1.5, ...
-                'compressor_capacity_gain',[3;zeros(max(cp1-1,0),1)], ...
-                'switch_budget',Kt);
-            mcb_context.graph=graph_context;
-            mcb_options=struct('max_iterations',mcb_max_iterations, ...
-                'relative_gap',mcb_relative_gap,'global_lower_bound',0, ...
-                'master_time_limit',10,'relax_time_limit',mcb_relax_time_limit, ...
-                'integer_time_limit',mcb_integer_time_limit, ...
-                'mip_gap',requested_mip_gap,'threads',requested_threads,'seed',0);
-            [sol,mcb_trace,rpp_topology_plan]=solve_topology_mcb_prototype( ...
-                [cons,plan_lock_cons,cons_in],Fs,ops,y_it(:,2:T+1), ...
-                a_ij(:,2:T+1),mcb_context,mcb_options);
-            if sol.problem==0
-                rpp_topology_cons=[y_it(:,2:T+1)==rpp_topology_plan.y, ...
-                    a_ij(:,2:T+1)==rpp_topology_plan.a];
-                mcb_trace_r{t}=mcb_trace;
-            end
-        else
-            sol=solvesdp([cons,plan_lock_cons,rpp_topology_cons,cons_in],Fs,ops);%恢复方案稳定后仅抛光连续SCA物理
-        end
+        sol=solvesdp([cons,plan_lock_cons,cons_in],Fs,ops);
         sca_solve_time_trace_r{t}(sca_iter)=toc(sca_solve_tic);
         if capture_solver_trace
             solver_output_trace_r{t}{sca_iter}=sol.solveroutput;
@@ -1532,7 +1428,6 @@ for t = 1:executed_steps
         else
             ref_speed_rms=sqrt(sum((Gp_ij_temp(:)-Gp_ij_temp_before(:)).^2)/numel(Gp_ij_temp));%投影模型用扬程参考点替代转速参考点
         end
-        reference_converged=(ref_flow_rms<sca_tol_ref)&&(ref_speed_rms<sca_pump_ref_tol);
         qbar_sca=value(Cw*W_ijbar);
         D_sca=value(D_ij);
         R_sca=Cw*R_w(:,1:T);
@@ -1732,9 +1627,8 @@ for t = 1:executed_steps
     % 状态类
     % --- 水/气/电 动态项：都要用第1列 ---
     H_i0   = value(H_i(:,1));          % 节点水压(用于下轮 L_ij 动力项里的 [H_i0, H_i(:,1:end-1)])
-    H_0    = value(H_tank(:,1)); % 若你确实需要 H_0，可用 H_tank 第1列；如果你的 H_0 是选择水箱节点的水头，请按你之前定义一致地取第1列
+    H_0    = value(H_tank(:,1)); % 执行时段末的水箱状态
     V_0=H_0*Sq;
-    % kesai_i0 = value(kesai_i(:,1));    % 气网节点压力（用于气体动态方程的上一时刻）
     Sl_t0    = value(Sl_t(:,1));       % 储气罐库存（与 Sl_t 递推约束对齐）
     X_mn0    = value(X_mn(:,1));       % 气管存（与 X_mn 递推约束对齐）
     X_ij0    = value(X_ij(:,1));       % 水管存（与 X_ij 递推约束对齐）
@@ -1749,14 +1643,9 @@ for t = 1:executed_steps
     switch_action_weighted_r(t)=switch_action_weight'*executed_switch_action;
     a_ij0    = round(value(a_ij(:,2))); % 二进制状态按求解容差投影
 
-    % --- 负荷恢复比例：也是“状态”，下一时刻应取第2列（保持单调不降） ---
+    % --- 回写执行时段的负荷恢复比例 ---
     w_i0_0   = min(max(value(w_i0(:,2)),0),1);%连续状态投影到物理边界
     g_i0_0   = min(max(value(g_i0(:,2)),0),1);%连续状态投影到物理边界
-
-
-
-
-
 
     fprintf('Rolling step %d/%d done.\n', t, executed_steps);
     w_i0_r(:,t)=value(w_i0(:,2));H_tank_r(:,t)=value(H_tank(:,1));P_pump_r(:,t)=value(P_pump(:,1));omima_r(:,t)=pump_speed_sca(:,1);
@@ -1791,14 +1680,13 @@ save(filename, ...
     'I_ij_r', 'G_ij_r', 'G_ji_r', ...
     'G_ijave_r', 'Gp_ij_r', 'g_sin_r', 'g_sout_r', 'q_W_r', ...
     'wind_lower_r', 'wind_mean_r', 'wind_sigma_r', 'epsilon_wind', ...
-    'box_coverage', 'wind_z', 'TT', 'Th', 'detT', 'case_file', 'H_source_initial', 'fix_water_source_head', 'sv', 'sw', 'gas_customer_min_pressure_bar', 'gas_source_data_nodes', 'gas_uniform_pressure_nodes', 'gas_soc_penalty_weight', 'enforce_gas_node_min_pressure', 'gas_customer_inactive_pressure_upper', 'water_friction_formulation', 'water_soc_penalty_weight', 'water_pipe_flow_capacity_m3s', 'enable_pipe_reverse_sca', 'pipe_sca_tol', 'pipe_sca_penalty_start', 'pipe_sca_reference_damping', 'kg', 'kw', 'omiga_g', 'water_hP_r', 'water_hM_r', 'water_qP_r', 'water_qM_r', 'water_soc_gap_r', 'gas_soc_gap_r', 'water_pipe_sca_slack_r', 'gas_pipe_sca_slack_r', 'kesai_i0', 'gas_source_nodes', 'gas_pressure_source_nodes', 'gas_source_pressure', 'gas_node1_source_capacity_kcfh', 'gas_flow_source_node', 'gas_flow_source_rate_kcfh', 'gas_flow_source_mode', 'G_smax', 'water_source_node', 'water_source_max', 'service_model', 'storage_model', 'water_tank_model', 'gas_tank_model', 'water_network_model', 'gas_network_model', 'fixed_pressure_formulation', 'pressure_driven_formulation', 'topology_formulation', 'topology_solution_mode', 'executed_steps', 'wind_capacity_boost_MW', 'wind_capacity_boost_unit', 'electric_load_reduction_MW', 'electric_load_before_reduction_MW', 'electric_load_after_reduction_MW', 'electric_load_scale', 'diagnostic_plan_file', 'diagnostic_plan_active', 'diagnostic_fix_scope', 'force_full_water_step', 'force_water_node_ids', 'switch_action_cost', 'tie_switch_multiplier', 'switch_action_count_r', 'switch_action_weighted_r', 'lookahead_start_step', 'binary_move_blocking', 'topology_move_blocking', 'flow_direction_move_blocking', 'water_region_move_blocking', 'gt_inactive_pressure_upper', 'sca_rolling_warm_start', 'sca_warm_start_mode', 'sca_warm_start_weight', 'pump_power_sca_mode', 'pump_speed_model', 'enforce_pump_physics', 'sca_iter_r', 'sca_slack_r', 'pump_slack_r', 'pump_curve_res_r', 'pump_power_res_r', 'sca_plan_locked_r', 'sca_tol_ref', 'sca_pump_ref_tol', 'sca_ref_flow_rms_r', 'sca_ref_pump_rms_r', 'sca_pump_tol', 'pump_power_tol', 'sca_penalty_start', 'solve_time_r', ...
+    'box_coverage', 'wind_z', 'TT', 'Th', 'detT', 'case_file', 'wind_file', ...
+    'requested_mip_gap', 'requested_threads', 'requested_time_limit', 'rolling_window_time_limit', 'sca_iter_max', 'H_source_initial', 'fix_water_source_head', 'sv', 'sw', 'gas_customer_min_pressure_bar', 'gas_source_data_nodes', 'gas_uniform_pressure_nodes', 'gas_soc_penalty_weight', 'enforce_gas_node_min_pressure', 'gas_customer_inactive_pressure_upper', 'water_friction_formulation', 'water_soc_penalty_weight', 'water_pipe_flow_capacity_m3s', 'enable_pipe_reverse_sca', 'pipe_sca_tol', 'pipe_sca_penalty_start', 'pipe_sca_reference_damping', 'kg', 'kw', 'omiga_g', 'water_hP_r', 'water_hM_r', 'water_qP_r', 'water_qM_r', 'water_soc_gap_r', 'gas_soc_gap_r', 'water_pipe_sca_slack_r', 'gas_pipe_sca_slack_r', 'kesai_i0', 'gas_source_nodes', 'gas_pressure_source_nodes', 'gas_source_pressure', 'gas_node1_source_capacity_kcfh', 'gas_flow_source_node', 'gas_flow_source_rate_kcfh', 'gas_flow_source_mode', 'G_smax', 'water_source_node', 'water_source_max', 'service_model', 'storage_model', 'water_tank_model', 'gas_tank_model', 'water_network_model', 'gas_network_model', 'fixed_pressure_formulation', 'pressure_driven_formulation', 'topology_formulation', 'topology_solution_mode', 'executed_steps', 'wind_capacity_boost_MW', 'wind_capacity_boost_unit', 'electric_load_reduction_MW', 'electric_load_before_reduction_MW', 'electric_load_after_reduction_MW', 'electric_load_scale', 'diagnostic_plan_file', 'diagnostic_plan_active', 'diagnostic_fix_scope', 'force_full_water_step', 'force_water_node_ids', 'switch_action_cost', 'tie_switch_multiplier', 'switch_action_count_r', 'switch_action_weighted_r', 'lookahead_start_step', 'binary_move_blocking', 'topology_move_blocking', 'flow_direction_move_blocking', 'water_region_move_blocking', 'gt_inactive_pressure_upper', 'sca_rolling_warm_start', 'sca_warm_start_mode', 'sca_warm_start_weight', 'pump_power_sca_mode', 'pump_speed_model', 'enforce_pump_physics', 'sca_iter_r', 'sca_slack_r', 'pump_slack_r', 'pump_curve_res_r', 'pump_power_res_r', 'sca_plan_locked_r', 'sca_tol_ref', 'sca_pump_ref_tol', 'sca_ref_flow_rms_r', 'sca_ref_pump_rms_r', 'sca_pump_tol', 'pump_power_tol', 'sca_penalty_start', 'solve_time_r', ...
     'solver_problem_r', 'friction_res_r', 'linepack_res_r', 'gas_dynamic_res_r', ...
     'sca_objective_trace_r', 'sca_ref_flow_rms_trace_r', 'sca_ref_pump_rms_trace_r', ...
     'sca_water_soc_gap_trace_r', 'sca_gas_soc_gap_trace_r', 'sca_pipe_residual_trace_r', 'sca_pump_slack_trace_r', ...
     'sca_water_pipe_slack_trace_r', 'sca_gas_pipe_slack_trace_r', ...
     'sca_pump_curve_residual_trace_r', 'sca_pump_power_residual_trace_r', ...
-    'capture_solver_trace', 'sca_mip_warm_start', 'sca_integer_stabilization', 'sca_solve_time_trace_r', 'solver_output_trace_r', 'rpp_trace_r', 'mcb_trace_r');
+    'capture_solver_trace', 'sca_mip_warm_start', 'sca_integer_stabilization', 'sca_solve_time_trace_r', 'solver_output_trace_r');
 
 disp(['✅ 所有变量已保存至文件：' filename]);
-
-
