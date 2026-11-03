@@ -72,6 +72,7 @@ end
 
 assert(all(~cellfun(@isempty,ordered_files)), ...
     'The latest completed batch does not contain all four comparison cases.');
+assert(all(horizons==horizons(1)),'The four cases must use the same rolling horizon.');
 assert(all(case_files==case_files(1)), ...
     'The latest four results do not use the same case-data file.');
 assert(all(abs(step_hours-step_hours(1))<1e-12), ...
@@ -79,7 +80,7 @@ assert(all(abs(step_hours-step_hours(1))<1e-12), ...
 case_file=char(case_files(1));
 if exist(case_file,'file')~=2
     [~,case_name,case_extension]=fileparts(strrep(case_file,'\','/'));
-    case_file=fullfile(package_root,'input',[case_name case_extension]);
+    case_file=fullfile(package_root,'data',[case_name case_extension]);
 end
 assert(exist(case_file,'file')==2,'Missing case-data file: %s',case_file);
 

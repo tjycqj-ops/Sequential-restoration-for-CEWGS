@@ -1,20 +1,17 @@
 function outputs=analyze_four_case_results(result_root,case_file,output_dir,expected_horizon)
-%ANALYZE_FOUR_CASE_LOW_PRESSURE_H1 Matched low-pressure comparison.
+%ANALYZE_FOUR_CASE_RESULTS Matched low-pressure comparison.
 % The plotted recovery metric is priority weighted, matching the restoration
 % objective. Supply trajectories and demand-weighted recovery are exported as
 % source data so that the visual comparison remains auditable.
 
 if nargin<3||isempty(output_dir),output_dir=pwd;end
-if nargin<4||isempty(expected_horizon),expected_horizon=1;end
+if nargin<4,expected_horizon=[];end
 if ~exist(output_dir,'dir'),mkdir(output_dir);end
 
-case_keys={'proposed','fixed_pressure','water_steady','gas_steady'};
-case_labels={'Proposed','Fixed-pressure','Steady-state water','Steady-state gas'};
-expected_service={'pressure_driven','fixed_pressure','pressure_driven','pressure_driven'};
-expected_water={'transient','transient','steady_state','transient'};
-expected_gas={'transient','transient','transient','steady_state'};
-expected_water_tank={'dynamic_storage','dynamic_storage','no_storage','dynamic_storage'};
-expected_gas_tank={'dynamic_storage','dynamic_storage','dynamic_storage','no_storage'};
+[~,cases]=four_case_configuration(fileparts(fileparts(mfilename('fullpath'))));
+case_keys={cases.key};case_labels={cases.label};
+expected_service={cases.service};expected_water={cases.water};expected_gas={cases.gas};
+expected_water_tank={cases.water_tank};expected_gas_tank={cases.gas_tank};
 expected_binary_linked=false(1,4);
 expected_topology_linked=true(1,4);
 expected_flow_direction_linked=true(1,4);
@@ -23,12 +20,10 @@ colors=[0.90 0.31 0.10;0.00 0.38 0.70;0.32 0.58 0.25;0.48 0.31 0.68];
 styles={'-','--',':','-.'};
 priority=[2,2,100,10,10,2,100,2,100,2,2,10,10,2]';
 ncase=numel(case_keys);
-if isscalar(expected_horizon)
-    expected_horizon=repmat(expected_horizon,1,ncase);
-else
-    expected_horizon=reshape(expected_horizon,1,[]);
-    assert(numel(expected_horizon)==ncase, ...
-        'Expected horizon must be scalar or contain one value per case.');
+if ~isempty(expected_horizon)
+    assert(all(expected_horizon==expected_horizon(1)), ...
+        'All comparison cases must use the same rolling horizon.');
+    expected_horizon=expected_horizon(1);
 end
 d=cell(1,ncase);result_files=cell(1,ncase);
 
@@ -38,8 +33,12 @@ for c=1:ncase
     [~,idx]=max([listing.datenum]);
     result_files{c}=fullfile(listing(idx).folder,listing(idx).name);
     d{c}=load(result_files{c});
-    assert(d{c}.TT==16&&d{c}.executed_steps==16&&d{c}.Th==expected_horizon(c), ...
-        '%s is not a completed H=%d/16-period result.',case_labels{c},expected_horizon(c));
+    if isempty(expected_horizon),expected_horizon=d{c}.Th;end
+    assert(d{c}.TT==d{1}.TT&&d{c}.executed_steps==d{c}.TT&&d{c}.Th==expected_horizon, ...
+        '%s has a different horizon/duration or is incomplete.',case_labels{c});
+    assert(abs(d{c}.detT-d{1}.detT)<1e-12&& ...
+        abs(d{c}.requested_mip_gap-d{1}.requested_mip_gap)<1e-12, ...
+        'Execution time step and MIPGap must match across cases.');
     assert(all(d{c}.solver_problem_r==0),'%s contains a failed window.',case_labels{c});
     assert(strcmp(d{c}.service_model,expected_service{c}));
     assert(strcmp(d{c}.water_network_model,expected_water{c}));
@@ -51,7 +50,7 @@ for c=1:ncase
     assert(abs(d{c}.gas_soc_penalty_weight-0.1)<1e-12);
     assert(strcmp(d{c}.gas_flow_source_mode,'upper_bound'));
     assert(~d{c}.gt_inactive_pressure_upper);
-    if expected_horizon(c)>1
+    if expected_horizon>1
         assert(logical(d{c}.binary_move_blocking)==expected_binary_linked(c)&& ...
             logical(d{c}.topology_move_blocking)==expected_topology_linked(c)&& ...
             logical(d{c}.flow_direction_move_blocking)==expected_flow_direction_linked(c), ...
@@ -73,7 +72,7 @@ gas_demand_nodes=find(casedata.GDS_node(:,6)~=0);
 water_req=3*casedata.WDS_node(2:end,3);
 gas_req=30*ones(numel(gas_demand_nodes),1);
 
-n=16;time_h=(0:n)*0.25;
+n=d{1}.TT;time_h=(0:n)*d{1}.detT;
 recovery_priority=zeros(ncase,3,n+1);
 recovery_demand=zeros(ncase,3,n+1);
 supply=zeros(ncase,3,n+1);
@@ -162,7 +161,7 @@ for p=1:3
             'MarkerSize',3.2,'MarkerFaceColor','w');
     end
     ylabel(ax,ylabels{p});ylim(ax,[0 105]);yticks(ax,0:25:100);
-    xlim(ax,[0 4]);xticks(ax,0:0.5:4);
+    xlim(ax,[0 time_h(end)]);xticks(ax,0:0.5:time_h(end));
     text(ax,0.015,0.94,panels{p},'Units','normalized','FontWeight','bold', ...
         'HorizontalAlignment','left','VerticalAlignment','top');
     if p==1
@@ -186,7 +185,7 @@ for p=1:2
     end
     pressure_upper=max(50,10*ceil(max(underpressure_service(:,p,:),[],'all')/10));
     ylabel(ax,pressure_labels{p});ylim(ax,[0 pressure_upper]);yticks(ax,0:10:pressure_upper);
-    xlim(ax,[0 4]);xticks(ax,0:0.5:4);
+    xlim(ax,[0 time_h(end)]);xticks(ax,0:0.5:time_h(end));
     text(ax,0.015,0.94,panels{p},'Units','normalized','FontWeight','bold', ...
         'HorizontalAlignment','left','VerticalAlignment','top');
     if p==1
@@ -214,7 +213,7 @@ for p=1:3
             'MarkerSize',3,'MarkerFaceColor','w');
     end
     ylabel(ax,ylabels{p});ylim(ax,[0 105]);yticks(ax,0:25:100);
-    xlim(ax,[0 4]);xticks(ax,0:0.5:4);
+    xlim(ax,[0 time_h(end)]);xticks(ax,0:0.5:time_h(end));
     text(ax,0.015,0.94,panels{p},'Units','normalized','FontWeight','bold', ...
         'HorizontalAlignment','left','VerticalAlignment','top');
     if p==1
@@ -253,4 +252,3 @@ exportgraphics(fig,fullfile(output_dir,[stem '.png']),'Resolution',600);
 exportgraphics(fig,fullfile(output_dir,[stem '.pdf']),'ContentType','vector');
 print(fig,fullfile(output_dir,[stem '.svg']),'-dsvg');
 end
-
